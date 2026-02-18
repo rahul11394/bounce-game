@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Bounce!</title>
+  <style>
+    /* Center everything on the page */
+    body {
+      margin: 0;
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: Arial, sans-serif;
+      color: white;
+    }
+
+    canvas {
+      background: #16213e;
+      border: 2px solid #0f3460;
+      border-radius: 8px;
+    }
+
+    #score {
+      font-size: 24px;
+      margin-bottom: 12px;
+      letter-spacing: 2px;
+    }
+
+    #message {
+      font-size: 18px;
+      margin-top: 12px;
+      color: #e94560;
+      min-height: 28px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="score">Score: 0</div>
+  <canvas id="gameCanvas" width="480" height="520"></canvas>
+  <div id="message">Use ← → arrow keys to move the plank</div>
+
+  <script>
+    // ─── Get the canvas and set up drawing ───────────────────────────────────
+    const canvas  = document.getElementById('gameCanvas');
+    const ctx     = canvas.getContext('2d');   // ctx = our drawing tool
+    const scoreEl = document.getElementById('score');
+    const msgEl   = document.getElementById('message');
+
+    // ─── Plank ────────────────────────────────────────────────────────────────
+    const plank = {
+      width:  100,
+      height: 14,
+      x: canvas.width / 2 - 50,   // start in the middle
+      y: canvas.height - 40,       // near the bottom
+      speed: 7,
+      color: '#e94560'
+    };
+
+    // ─── Ball ─────────────────────────────────────────────────────────────────
+    const ball = {
+      x: canvas.width / 2,
+      y: canvas.height / 2,
+      radius: 10,
+      speedX: 4,    // moves 4 pixels per frame horizontally
+      speedY: -4,   // moves 4 pixels per frame upward (negative = up)
+      color: '#f5a623'
+    };
+
+    // ─── Game state ───────────────────────────────────────────────────────────
+    let score     = 0;
+    let gameOver  = false;
+    let animId    = null;   // stores the animation frame ID so we can stop it
+
+    // ─── Track which keys are currently held down ─────────────────────────────
+    const keys = {};
+    document.addEventListener('keydown', e => { keys[e.key] = true;  });
+    document.addEventListener('keyup',   e => { keys[e.key] = false; });
+
+    // ─── Listen for Enter key to restart ─────────────────────────────────────
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && gameOver) restartGame();
+    });
+
+    // ─── Draw helpers ─────────────────────────────────────────────────────────
+
+    function drawBall() {
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+      ctx.fillStyle = ball.color;
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    function drawPlank() {
+      // Rounded rectangle for the plank
+      ctx.beginPath();
+      ctx.roundRect(plank.x, plank.y, plank.width, plank.height, 6);
+      ctx.fillStyle = plank.color;
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    // ─── Move the plank based on held keys ────────────────────────────────────
+    function movePlank() {
+      if (keys['ArrowLeft']  && plank.x > 0) {
+        plank.x -= plank.speed;
+      }
+      if (keys['ArrowRight'] && plank.x + plank.width < canvas.width) {
+        plank.x += plank.speed;
+      }
+    }
+
+    // ─── Move the ball and handle bouncing ────────────────────────────────────
+    function moveBall() {
+      ball.x += ball.speedX;
+      ball.y += ball.speedY;
+
+      // Bounce off LEFT wall
+      if (ball.x - ball.radius < 0) {
+        ball.x     = ball.radius;   // prevent sticking inside wall
+        ball.speedX = -ball.speedX;
+      }
+
+      // Bounce off RIGHT wall
+      if (ball.x + ball.radius > canvas.width) {
+        ball.x     = canvas.width - ball.radius;
+        ball.speedX = -ball.speedX;
+      }
+
+      // Bounce off TOP wall
+      if (ball.y - ball.radius < 0) {
+        ball.y     = ball.radius;
+        ball.speedY = -ball.speedY;
+      }
+
+      // ── Did the ball hit the plank? ──────────────────────────────────────
+      // Only check when ball is moving downward (speedY > 0) — this prevents
+      // the ball from triggering the collision multiple frames in a row.
+      const hitPlankX = ball.x >= plank.x && ball.x <= plank.x + plank.width;
+      const hitPlankY = ball.y + ball.radius >= plank.y &&
+                        ball.y + ball.radius <= plank.y + plank.height;
+
+      if (hitPlankX && hitPlankY && ball.speedY > 0) {
+        ball.y = plank.y - ball.radius;  // place ball just above the plank
+
+        // hitPos: -1 = hit far left edge, 0 = center, +1 = far right edge
+        const hitPos = (ball.x - (plank.x + plank.width / 2)) / (plank.width / 2);
+
+        // Angle from horizontal: 90° = straight up, steered left/right by hitPos
+        // e.g. hitPos=-1 → 150° (up-left), hitPos=0 → 90° (up), hitPos=+1 → 30° (up-right)
+        const maxAngle = 60;
+        const angle    = (90 - hitPos * maxAngle) * (Math.PI / 180);
+
+        const speed    = Math.sqrt(ball.speedX ** 2 + ball.speedY ** 2);
+        ball.speedX    =  speed * Math.cos(angle);
+        ball.speedY    = -speed * Math.sin(angle);   // negative = upward on canvas
+
+        score++;
+        scoreEl.textContent = 'Score: ' + score;
+
+        // Every 5 bounces, speed up a little
+        if (score % 5 === 0) {
+          ball.speedX *= 1.08;
+          ball.speedY *= 1.08;
+        }
+      }
+
+      // ── Ball fell past the plank → Game Over ─────────────────────────────
+      if (ball.y - ball.radius > canvas.height) {
+        endGame();
+      }
+    }
+
+    // ─── Game Over ────────────────────────────────────────────────────────────
+    function endGame() {
+      gameOver = true;
+      cancelAnimationFrame(animId);
+
+      // Draw dim overlay
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Game Over text
+      ctx.fillStyle = '#e94560';
+      ctx.font      = 'bold 48px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20);
+
+      ctx.fillStyle = 'white';
+      ctx.font      = '22px Arial';
+      ctx.fillText('Score: ' + score, canvas.width / 2, canvas.height / 2 + 25);
+
+      ctx.fillStyle = '#aaa';
+      ctx.font      = '16px Arial';
+      ctx.fillText('Press Enter to play again', canvas.width / 2, canvas.height / 2 + 60);
+    }
+
+    // ─── Restart the game ─────────────────────────────────────────────────────
+    function restartGame() {
+      // Reset ball
+      ball.x      = canvas.width / 2;
+      ball.y      = canvas.height / 2;
+      ball.speedX = 4;
+      ball.speedY = -4;
+
+      // Reset plank
+      plank.x = canvas.width / 2 - plank.width / 2;
+
+      // Reset state
+      score    = 0;
+      gameOver = false;
+      scoreEl.textContent = 'Score: 0';
+      msgEl.textContent   = 'Use ← → arrow keys to move the plank';
+
+      gameLoop();
+    }
+
+    // ─── Main game loop (runs every frame) ────────────────────────────────────
+    function gameLoop() {
+      // Clear the canvas each frame
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      movePlank();
+      moveBall();
+      drawPlank();
+      drawBall();
+
+      // Schedule the next frame (~60fps)
+      animId = requestAnimationFrame(gameLoop);
+    }
+
+    // ─── Start! ───────────────────────────────────────────────────────────────
+    gameLoop();
+  </script>
+
+</body>
+</html>
