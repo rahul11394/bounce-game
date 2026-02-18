@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <title>Bounce!</title>
   <style>
-    /* Center everything on the page */
     body {
       margin: 0;
       background: #1a1a2e;
@@ -12,9 +11,10 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100vh;
+      min-height: 100vh;
       font-family: Arial, sans-serif;
       color: white;
+      user-select: none;
     }
 
     canvas {
@@ -23,39 +23,85 @@
       border-radius: 8px;
     }
 
-    #score {
-      font-size: 24px;
-      margin-bottom: 12px;
-      letter-spacing: 2px;
+    /* Score / level / lives bar above the canvas */
+    #hud {
+      display: flex;
+      justify-content: space-between;
+      width: 480px;
+      margin-bottom: 8px;
+      font-size: 20px;
+      letter-spacing: 1px;
     }
 
-    #message {
-      font-size: 18px;
-      margin-top: 12px;
-      color: #e94560;
-      min-height: 28px;
+    /* Active power-up tags below the canvas */
+    #powerup-bar {
+      width: 480px;
+      margin-top: 8px;
+      min-height: 24px;
+      display: flex;
+      gap: 10px;
     }
+
+    .pu-tag {
+      padding: 3px 10px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    .pu-WIDE { background: #3498db; }
+    .pu-SLOW { background: #2ecc71; color: #111; }
   </style>
 </head>
 <body>
 
-  <div id="score">Score: 0</div>
-  <canvas id="gameCanvas" width="480" height="520"></canvas>
-  <div id="message">Use ← → arrow keys to move the plank</div>
+  <div id="hud">
+    <span id="score-el">Score: 0</span>
+    <span id="level-el">Level: 1</span>
+    <span id="lives-el">Lives: 3</span>
+  </div>
+
+  <canvas id="gameCanvas" width="480" height="560"></canvas>
+
+  <div id="powerup-bar"></div>
 
   <script>
-    // ─── Get the canvas and set up drawing ───────────────────────────────────
+
+    // ─── Canvas setup ─────────────────────────────────────────────────────────
     const canvas  = document.getElementById('gameCanvas');
-    const ctx     = canvas.getContext('2d');   // ctx = our drawing tool
-    const scoreEl = document.getElementById('score');
-    const msgEl   = document.getElementById('message');
+    const ctx     = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score-el');
+    const levelEl = document.getElementById('level-el');
+    const livesEl = document.getElementById('lives-el');
+    const puBar   = document.getElementById('powerup-bar');
+
+    // ─── Brick layout constants ───────────────────────────────────────────────
+    const BRICK_COLS     = 8;
+    const BRICK_ROWS     = 5;
+    const BRICK_W        = 52;
+    const BRICK_H        = 18;
+    const BRICK_GAP      = 5;
+    const BRICK_OFFSET_X = 12;   // left margin before first brick column
+    const BRICK_OFFSET_Y = 20;   // top margin before first brick row
+
+    // One color per row
+    const ROW_COLORS = ['#e94560', '#f5a623', '#f1c40f', '#2ecc71', '#3498db'];
+
+    // ─── Power-up constants ───────────────────────────────────────────────────
+    const PU_TYPES    = ['WIDE', 'SLOW', 'LIFE'];
+    const PU_COLORS   = { WIDE: '#3498db', SLOW: '#2ecc71', LIFE: '#e94560' };
+    const PU_DURATION = 8000;   // how long WIDE / SLOW last (milliseconds)
+    const SLOW_FACTOR = 0.55;   // ball moves at 55% speed while SLOW is active
 
     // ─── Plank ────────────────────────────────────────────────────────────────
+    const PLANK_BASE_W = 100;
+    const PLANK_WIDE_W = 160;
+
     const plank = {
-      width:  100,
+      width:  PLANK_BASE_W,
       height: 14,
-      x: canvas.width / 2 - 50,   // start in the middle
-      y: canvas.height - 40,       // near the bottom
+      x: canvas.width / 2 - PLANK_BASE_W / 2,
+      y: canvas.height - 40,
       speed: 7,
       color: '#e94560'
     };
@@ -63,30 +109,70 @@
     // ─── Ball ─────────────────────────────────────────────────────────────────
     const ball = {
       x: canvas.width / 2,
-      y: canvas.height / 2,
+      y: canvas.height / 2 + 60,
       radius: 10,
-      speedX: 4,    // moves 4 pixels per frame horizontally
-      speedY: -4,   // moves 4 pixels per frame upward (negative = up)
+      speedX: 3,
+      speedY: -4,
       color: '#f5a623'
     };
 
     // ─── Game state ───────────────────────────────────────────────────────────
-    let score     = 0;
-    let gameOver  = false;
-    let animId    = null;   // stores the animation frame ID so we can stop it
+    let score        = 0;
+    let lives        = 3;
+    let level        = 1;
+    let plankBounces = 0;    // counts plank hits separately for speed-up trigger
+    let gameOver     = false;
+    let bricks       = [];
+    let fallingPUs   = [];   // power-up capsules currently falling
+    let activePUs    = {};   // { WIDE: expiryTimestamp, SLOW: expiryTimestamp }
+    let animId       = null;
+    let respawnTimer = null; // reference to the "Get Ready" timeout so we can cancel it
+    let paused       = false; // true during the "Get Ready" pause between lives
 
-    // ─── Track which keys are currently held down ─────────────────────────────
+    // ─── Key tracking ─────────────────────────────────────────────────────────
     const keys = {};
-    document.addEventListener('keydown', e => { keys[e.key] = true;  });
-    document.addEventListener('keyup',   e => { keys[e.key] = false; });
-
-    // ─── Listen for Enter key to restart ─────────────────────────────────────
     document.addEventListener('keydown', e => {
+      keys[e.key] = true;
       if (e.key === 'Enter' && gameOver) restartGame();
     });
+    document.addEventListener('keyup', e => { keys[e.key] = false; });
 
-    // ─── Draw helpers ─────────────────────────────────────────────────────────
+    // ─── Build the brick grid ─────────────────────────────────────────────────
+    function initBricks() {
+      bricks = [];
+      for (let row = 0; row < BRICK_ROWS; row++) {
+        for (let col = 0; col < BRICK_COLS; col++) {
+          bricks.push({
+            x:     BRICK_OFFSET_X + col * (BRICK_W + BRICK_GAP),
+            y:     BRICK_OFFSET_Y + row * (BRICK_H + BRICK_GAP),
+            color: ROW_COLORS[row],
+            alive: true
+          });
+        }
+      }
+    }
 
+    // ─── Update the HTML HUD ──────────────────────────────────────────────────
+    function updateHUD() {
+      scoreEl.textContent = 'Score: ' + score;
+      levelEl.textContent = 'Level: ' + level;
+      livesEl.textContent = 'Lives: ' + lives;
+    }
+
+    // ─── Render active power-up countdown tags below the canvas ──────────────
+    function renderPUBar() {
+      puBar.innerHTML = '';
+      const now = performance.now();
+      for (const [type, expiry] of Object.entries(activePUs)) {
+        const remaining = Math.ceil((expiry - now) / 1000);
+        const tag = document.createElement('span');
+        tag.className   = 'pu-tag pu-' + type;
+        tag.textContent = type + ' ' + remaining + 's';
+        puBar.appendChild(tag);
+      }
+    }
+
+    // ─── Drawing functions ────────────────────────────────────────────────────
     function drawBall() {
       ctx.beginPath();
       ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
@@ -96,7 +182,6 @@
     }
 
     function drawPlank() {
-      // Rounded rectangle for the plank
       ctx.beginPath();
       ctx.roundRect(plank.x, plank.y, plank.width, plank.height, 6);
       ctx.fillStyle = plank.color;
@@ -104,138 +189,360 @@
       ctx.closePath();
     }
 
-    // ─── Move the plank based on held keys ────────────────────────────────────
-    function movePlank() {
-      if (keys['ArrowLeft']  && plank.x > 0) {
-        plank.x -= plank.speed;
-      }
-      if (keys['ArrowRight'] && plank.x + plank.width < canvas.width) {
-        plank.x += plank.speed;
+    function drawBricks() {
+      for (const b of bricks) {
+        if (!b.alive) continue;
+        ctx.beginPath();
+        ctx.roundRect(b.x, b.y, BRICK_W, BRICK_H, 3);
+        ctx.fillStyle = b.color;
+        ctx.fill();
+        ctx.closePath();
       }
     }
 
-    // ─── Move the ball and handle bouncing ────────────────────────────────────
+    function drawFallingPUs() {
+      ctx.font      = 'bold 11px Arial';
+      ctx.textAlign = 'center';
+      for (const pu of fallingPUs) {
+        ctx.beginPath();
+        ctx.roundRect(pu.x, pu.y, pu.w, pu.h, 4);
+        ctx.fillStyle = PU_COLORS[pu.type];
+        ctx.fill();
+        ctx.closePath();
+
+        ctx.fillStyle = 'white';
+        ctx.fillText(pu.type, pu.x + pu.w / 2, pu.y + pu.h / 2 + 4);
+      }
+    }
+
+    // ─── Move plank with arrow keys ───────────────────────────────────────────
+    function movePlank() {
+      if (keys['ArrowLeft']  && plank.x > 0)
+        plank.x -= plank.speed;
+      if (keys['ArrowRight'] && plank.x + plank.width < canvas.width)
+        plank.x += plank.speed;
+    }
+
+    // ─── Move ball + handle wall and plank collisions ─────────────────────────
     function moveBall() {
-      ball.x += ball.speedX;
-      ball.y += ball.speedY;
+      // SLOW power-up reduces movement per frame without changing stored speed
+      const slow = activePUs.SLOW ? SLOW_FACTOR : 1;
+      ball.x += ball.speedX * slow;
+      ball.y += ball.speedY * slow;
 
-      // Bounce off LEFT wall
+      // Left wall
       if (ball.x - ball.radius < 0) {
-        ball.x     = ball.radius;   // prevent sticking inside wall
+        ball.x      = ball.radius;
         ball.speedX = -ball.speedX;
       }
-
-      // Bounce off RIGHT wall
+      // Right wall
       if (ball.x + ball.radius > canvas.width) {
-        ball.x     = canvas.width - ball.radius;
+        ball.x      = canvas.width - ball.radius;
         ball.speedX = -ball.speedX;
       }
-
-      // Bounce off TOP wall
+      // Top wall
       if (ball.y - ball.radius < 0) {
-        ball.y     = ball.radius;
+        ball.y      = ball.radius;
         ball.speedY = -ball.speedY;
       }
 
-      // ── Did the ball hit the plank? ──────────────────────────────────────
-      // Only check when ball is moving downward (speedY > 0) — this prevents
-      // the ball from triggering the collision multiple frames in a row.
+      // ── Plank collision ───────────────────────────────────────────────────
       const hitPlankX = ball.x >= plank.x && ball.x <= plank.x + plank.width;
       const hitPlankY = ball.y + ball.radius >= plank.y &&
                         ball.y + ball.radius <= plank.y + plank.height;
 
+      // ball.speedY > 0 means ball is moving downward — prevents multi-hit
       if (hitPlankX && hitPlankY && ball.speedY > 0) {
-        ball.y = plank.y - ball.radius;  // place ball just above the plank
+        ball.y = plank.y - ball.radius;
 
-        // hitPos: -1 = hit far left edge, 0 = center, +1 = far right edge
-        const hitPos = (ball.x - (plank.x + plank.width / 2)) / (plank.width / 2);
-
-        // Angle from horizontal: 90° = straight up, steered left/right by hitPos
-        // e.g. hitPos=-1 → 150° (up-left), hitPos=0 → 90° (up), hitPos=+1 → 30° (up-right)
+        // Where on the plank did it hit? -1 = left edge, 0 = center, +1 = right edge
+        const hitPos   = (ball.x - (plank.x + plank.width / 2)) / (plank.width / 2);
         const maxAngle = 60;
         const angle    = (90 - hitPos * maxAngle) * (Math.PI / 180);
-
         const speed    = Math.sqrt(ball.speedX ** 2 + ball.speedY ** 2);
         ball.speedX    =  speed * Math.cos(angle);
-        ball.speedY    = -speed * Math.sin(angle);   // negative = upward on canvas
+        ball.speedY    = -speed * Math.sin(angle);   // negative = upward
 
         score++;
-        scoreEl.textContent = 'Score: ' + score;
+        plankBounces++;
+        updateHUD();
 
-        // Every 5 bounces, speed up a little
-        if (score % 5 === 0) {
-          ball.speedX *= 1.08;
-          ball.speedY *= 1.08;
+        // Speed up every 5 plank bounces (skip if SLOW is active)
+        if (plankBounces % 5 === 0 && !activePUs.SLOW) {
+          ball.speedX *= 1.05;
+          ball.speedY *= 1.05;
         }
       }
 
-      // ── Ball fell past the plank → Game Over ─────────────────────────────
+      // ── Ball fell below plank ─────────────────────────────────────────────
       if (ball.y - ball.radius > canvas.height) {
-        endGame();
+        loseLife();
       }
     }
 
-    // ─── Game Over ────────────────────────────────────────────────────────────
+    // ─── Ball vs brick collisions ─────────────────────────────────────────────
+    function checkBrickCollisions() {
+      let bounced   = false;   // only bounce once per frame even if hitting multiple bricks
+      let spawnedPU = false;   // only drop one power-up per frame even if multiple bricks hit
+
+      for (const brick of bricks) {
+        if (!brick.alive) continue;
+
+        // Find the closest point on the brick rectangle to the ball center
+        const nearX = Math.max(brick.x, Math.min(ball.x, brick.x + BRICK_W));
+        const nearY = Math.max(brick.y, Math.min(ball.y, brick.y + BRICK_H));
+        const dx    = ball.x - nearX;
+        const dy    = ball.y - nearY;
+
+        if (dx * dx + dy * dy < ball.radius * ball.radius) {
+          brick.alive = false;
+          score += 10;
+          updateHUD();
+
+          // 30% chance to drop a power-up capsule — but at most one per frame
+          if (!spawnedPU && Math.random() < 0.3) {
+            spawnPowerup(brick);
+            spawnedPU = true;
+          }
+
+          if (!bounced) {
+            // Flip the axis with less penetration for a realistic bounce
+            const overlapX = ball.speedX > 0
+              ? (brick.x + BRICK_W) - (ball.x - ball.radius)
+              : (ball.x + ball.radius) - brick.x;
+            const overlapY = ball.speedY > 0
+              ? (brick.y + BRICK_H) - (ball.y - ball.radius)
+              : (ball.y + ball.radius) - brick.y;
+
+            if (overlapX < overlapY) {
+              ball.speedX = -ball.speedX;
+            } else {
+              ball.speedY = -ball.speedY;
+            }
+            bounced = true;
+          }
+        }
+      }
+
+      // All bricks cleared → start next level with a fresh grid and faster ball
+      if (bricks.every(b => !b.alive)) {
+        level++;
+        updateHUD();
+        initBricks();
+        ball.speedX *= 1.1;
+        ball.speedY *= 1.1;
+      }
+    }
+
+    // ─── Drop a power-up capsule from a destroyed brick ───────────────────────
+    function spawnPowerup(brick) {
+      const type = PU_TYPES[Math.floor(Math.random() * PU_TYPES.length)];
+      const w    = 46;
+      fallingPUs.push({
+        x:     brick.x + BRICK_W / 2 - w / 2,
+        y:     brick.y,
+        w:     w,
+        h:     18,
+        type:  type,
+        speed: 1.8
+      });
+    }
+
+    // ─── Move capsules down and check if plank catches them ───────────────────
+    function updateFallingPUs() {
+      for (let i = fallingPUs.length - 1; i >= 0; i--) {
+        const pu = fallingPUs[i];
+        pu.y += pu.speed;
+
+        const caughtX = pu.x + pu.w > plank.x && pu.x < plank.x + plank.width;
+        const caughtY = pu.y + pu.h > plank.y && pu.y < plank.y + plank.height;
+
+        if (caughtX && caughtY) {
+          applyPowerup(pu.type);
+          fallingPUs.splice(i, 1);
+          continue;
+        }
+
+        if (pu.y > canvas.height) {
+          fallingPUs.splice(i, 1);
+        }
+      }
+    }
+
+    // ─── Apply a caught power-up ──────────────────────────────────────────────
+    function applyPowerup(type) {
+      const now = performance.now();
+
+      if (type === 'WIDE') {
+        plank.width    = PLANK_WIDE_W;
+        plank.x        = Math.min(plank.x, canvas.width - PLANK_WIDE_W);
+        activePUs.WIDE = now + PU_DURATION;
+
+      } else if (type === 'SLOW') {
+        activePUs.SLOW = now + PU_DURATION;
+
+      } else if (type === 'LIFE') {
+        lives = Math.min(lives + 1, 5);
+        updateHUD();
+      }
+    }
+
+    // ─── Remove expired power-ups ─────────────────────────────────────────────
+    function checkPUExpirations() {
+      const now     = performance.now();
+      let   changed = false;
+
+      if (activePUs.WIDE && now > activePUs.WIDE) {
+        plank.width = PLANK_BASE_W;
+        plank.x     = Math.min(plank.x, canvas.width - PLANK_BASE_W);
+        delete activePUs.WIDE;
+        changed = true;
+      }
+      if (activePUs.SLOW && now > activePUs.SLOW) {
+        delete activePUs.SLOW;
+        changed = true;
+      }
+      if (changed) renderPUBar();
+    }
+
+    // ─── Lose a life ──────────────────────────────────────────────────────────
+    function loseLife() {
+      // Guard: if game is already over, do nothing.
+      // Without this, a still-running loop can call loseLife() many times.
+      if (gameOver) return;
+
+      lives--;
+      updateHUD();
+
+      if (lives <= 0) {
+        endGame();
+        return;
+      }
+
+      // Still alive — pause the loop, show overlay, then respawn after 1.5s.
+      // We set paused=true instead of cancelAnimationFrame because loseLife() is
+      // called from inside gameLoop(). Cancelling animId here doesn't stop the
+      // current execution — gameLoop() would still reach its final line and
+      // schedule another frame. The paused flag makes gameLoop() skip that line.
+      paused     = true;
+      fallingPUs = [];
+
+      ball.x      = canvas.width / 2;
+      ball.y      = canvas.height / 2 + 60;
+      ball.speedX = 3 * (Math.random() < 0.5 ? 1 : -1);
+      ball.speedY = -4;
+      plank.x     = canvas.width / 2 - plank.width / 2;
+
+      drawAll();
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'white';
+      ctx.font      = 'bold 36px Arial';
+      ctx.fillText('Get Ready!', canvas.width / 2, canvas.height / 2 - 10);
+      ctx.fillStyle = '#aaa';
+      ctx.font      = '18px Arial';
+      ctx.fillText('Lives remaining: ' + lives, canvas.width / 2, canvas.height / 2 + 28);
+
+      // Store the timer so restartGame() can cancel it if Enter is pressed early
+      respawnTimer = setTimeout(() => {
+        respawnTimer = null;
+        paused = false;
+        gameLoop();
+      }, 1500);
+    }
+
+    // ─── Game over screen ─────────────────────────────────────────────────────
     function endGame() {
       gameOver = true;
       cancelAnimationFrame(animId);
 
-      // Draw dim overlay
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Game Over text
+      ctx.textAlign = 'center';
       ctx.fillStyle = '#e94560';
       ctx.font      = 'bold 48px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20);
+      ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 40);
 
       ctx.fillStyle = 'white';
       ctx.font      = '22px Arial';
-      ctx.fillText('Score: ' + score, canvas.width / 2, canvas.height / 2 + 25);
+      ctx.fillText('Score: ' + score, canvas.width / 2, canvas.height / 2 + 5);
+      ctx.fillText('Level reached: ' + level, canvas.width / 2, canvas.height / 2 + 35);
 
       ctx.fillStyle = '#aaa';
       ctx.font      = '16px Arial';
-      ctx.fillText('Press Enter to play again', canvas.width / 2, canvas.height / 2 + 60);
+      ctx.fillText('Press Enter to play again', canvas.width / 2, canvas.height / 2 + 68);
     }
 
-    // ─── Restart the game ─────────────────────────────────────────────────────
+    // ─── Full restart ─────────────────────────────────────────────────────────
     function restartGame() {
-      // Reset ball
+      // Kill any running loop and any pending "Get Ready" timer before starting fresh
+      cancelAnimationFrame(animId);
+      animId = null;
+      if (respawnTimer) {
+        clearTimeout(respawnTimer);
+        respawnTimer = null;
+      }
+
+      score        = 0;
+      lives        = 3;
+      level        = 1;
+      plankBounces = 0;
+      gameOver     = false;
+      paused       = false;
+      activePUs    = {};
+      fallingPUs   = [];
+
       ball.x      = canvas.width / 2;
-      ball.y      = canvas.height / 2;
-      ball.speedX = 4;
+      ball.y      = canvas.height / 2 + 60;
+      ball.speedX = 3;
       ball.speedY = -4;
 
-      // Reset plank
-      plank.x = canvas.width / 2 - plank.width / 2;
+      plank.width = PLANK_BASE_W;
+      plank.x     = canvas.width / 2 - PLANK_BASE_W / 2;
 
-      // Reset state
-      score    = 0;
-      gameOver = false;
-      scoreEl.textContent = 'Score: 0';
-      msgEl.textContent   = 'Use ← → arrow keys to move the plank';
-
+      initBricks();
+      updateHUD();
+      puBar.innerHTML = '';
       gameLoop();
     }
 
-    // ─── Main game loop (runs every frame) ────────────────────────────────────
-    function gameLoop() {
-      // Clear the canvas each frame
+    // ─── Draw everything ──────────────────────────────────────────────────────
+    function drawAll() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      movePlank();
-      moveBall();
+      drawBricks();
+      drawFallingPUs();
       drawPlank();
       drawBall();
-
-      // Schedule the next frame (~60fps)
-      animId = requestAnimationFrame(gameLoop);
     }
 
-    // ─── Start! ───────────────────────────────────────────────────────────────
-    gameLoop();
-  </script>
+    // ─── Main game loop ───────────────────────────────────────────────────────
+    function gameLoop() {
+      drawAll();
+      movePlank();
+      moveBall();
+      checkBrickCollisions();
+      updateFallingPUs();
+      checkPUExpirations();
 
+      // Only schedule the next frame if the game is still actively running.
+      // If paused or gameOver were set during this frame (e.g. by loseLife()
+      // or endGame() called from moveBall()), we stop here instead of looping.
+      if (!gameOver && !paused) {
+        animId = requestAnimationFrame(gameLoop);
+      }
+    }
+
+    // Update the power-up countdown display 4× per second
+    setInterval(() => {
+      if (Object.keys(activePUs).length > 0) renderPUBar();
+    }, 250);
+
+    // ─── Start ────────────────────────────────────────────────────────────────
+    initBricks();
+    gameLoop();
+
+  </script>
 </body>
 </html>
